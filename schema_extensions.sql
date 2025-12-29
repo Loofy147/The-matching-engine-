@@ -1,58 +1,83 @@
 -- This script contains the DDL for extending the database schema
--- based on the freelancer matching system design.
+-- based on the freelancer matching system design document.
 
--- Note: The GEOGRAPHY type used in the 'jobs' table typically requires
--- a spatial database extension like PostGIS in PostgreSQL.
--- If you are not using PostgreSQL with PostGIS, you might need to
--- adapt this (e.g., using separate latitude and longitude columns).
+-- Note: The GEOGRAPHY type requires the PostGIS extension in PostgreSQL.
 
--- 1. Freelancer Availability
+-- 1. Taxonomy Tables for Axes and Attributes
+CREATE TABLE axes (
+  axis_id TEXT PRIMARY KEY, -- 'time','place','cost','experience'
+  description TEXT
+);
+
+CREATE TABLE axis_attributes (
+  attr_id TEXT PRIMARY KEY, -- 'availability','timezone','remote_ok', etc.
+  axis_id TEXT NOT NULL REFERENCES axes(axis_id),
+  data_type TEXT NOT NULL, -- 'boolean','numeric','jsonb','geography','timestamp'
+  description TEXT
+);
+
+-- 2. Freelancer-side Extensions
+
+-- Availability windows for freelancers
 CREATE TABLE freelancer_availability (
   user_id UUID NOT NULL REFERENCES users(id),
-  start_time TIMESTAMPTZ NOT NULL,
-  end_time TIMESTAMPTZ NOT NULL,
-  recurrence JSONB DEFAULT '{}' , -- optional: {"type":"weekly","days":[1,3,5],"start":"09:00","end":"17:00"}
-  PRIMARY KEY (user_id, start_time)
+  start_ts TIMESTAMPTZ NOT NULL,
+  end_ts TIMESTAMPTZ NOT NULL,
+  recurrence JSONB DEFAULT '{}', -- e.g., {"type":"weekly","days":[1,3,5]}
+  PRIMARY KEY(user_id, start_ts)
 );
 
--- 2. User Profile Extensions for Location Preferences
+-- Location and remote work preferences for users
 ALTER TABLE users ADD COLUMN remote_ok BOOLEAN DEFAULT TRUE;
-ALTER TABLE users ADD COLUMN locations JSONB; -- e.g. [{"country":"DZ","city":"Algiers","radius_km":50}]
+-- Storing multiple potential work locations for a freelancer
+ALTER TABLE users ADD COLUMN location_points JSONB; -- e.g. [{"point":"SRID=4326;POINT(lon lat)","radius_km":50}]
 
--- 3. Detailed Freelancer Experience
-CREATE TABLE freelancer_experience (
+-- Domain-specific experience for freelancers
+CREATE TABLE freelancer_domains (
   user_id UUID NOT NULL REFERENCES users(id),
-  domain TEXT NOT NULL,        -- e.g., "e-commerce","fintech"
+  domain TEXT NOT NULL,
   years NUMERIC(5,2) DEFAULT 0,
-  seniority TEXT CHECK (seniority IN ('junior','mid','senior','lead')),
-  certifications JSONB,
-  PRIMARY KEY (user_id, domain)
+  PRIMARY KEY(user_id, domain)
 );
 
--- 4. Freelancer Rate History (optional but good practice)
-CREATE TABLE freelancer_rates (
+-- Certifications held by freelancers
+CREATE TABLE freelancer_certs (
   user_id UUID NOT NULL REFERENCES users(id),
-  rate NUMERIC(12,2) NOT NULL,
-  effective_from TIMESTAMPTZ NOT NULL,
-  effective_to TIMESTAMPTZ,
-  PRIMARY KEY (user_id, effective_from)
+  cert_code TEXT NOT NULL,
+  issued_by TEXT,
+  verified BOOLEAN DEFAULT FALSE,
+  PRIMARY KEY(user_id, cert_code)
 );
 
--- 5. Job Extensions for Detailed Matching Requirements
-ALTER TABLE jobs ADD COLUMN start_date TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN end_date TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN schedule_requirements JSONB DEFAULT '{}' ; -- e.g., {"type":"fixed","windows":[{"start":"2025-01-10T09:00Z","end":"2025-01-10T17:00Z"}]}
-ALTER TABLE jobs ADD COLUMN location_policy TEXT DEFAULT 'remote' CHECK (location_policy IN ('remote','onsite','hybrid'));
-ALTER TABLE jobs ADD COLUMN location_point GEOGRAPHY(POINT); -- for onsite/hybrid jobs
-ALTER TABLE jobs ADD COLUMN location_radius_km INT DEFAULT 50; -- acceptable radius for onsite
-ALTER TABLE jobs ADD COLUMN budget_floor NUMERIC(12,2);
-ALTER TABLE jobs ADD COLUMN budget_ceiling NUMERIC(12,2);
-ALTER TABLE jobs ADD COLUMN mandatory_requirements JSONB DEFAULT '[]'; -- e.g. ["cert:X","domain:fintech"]
+-- 3. Job-side Extensions
 
--- 6. Match Weights Configuration Table
+-- Scheduling requirements for jobs
+ALTER TABLE jobs ADD COLUMN schedule_requirements JSONB DEFAULT '{}';
+-- e.g. {"type":"fixed","windows":[{"start":"2026-01-10T09:00Z","end":"2026-01-10T17:00Z"}]}
+
+-- Location policy and details for jobs
+ALTER TABLE jobs ADD COLUMN location_policy TEXT DEFAULT 'remote' CHECK (location_policy IN ('remote','onsite','hybrid'));
+ALTER TABLE jobs ADD COLUMN location_point GEOGRAPHY(POINT);
+ALTER TABLE jobs ADD COLUMN location_radius_km INT DEFAULT 50;
+
+-- Pricing and budget details for jobs
+ALTER TABLE jobs ADD COLUMN price_policy JSONB DEFAULT '{}';
+-- e.g. {"currency":"USD","min":50,"max":120,"negotiable":true}
+
+-- Detailed experience requirements for jobs
+ALTER TABLE jobs ADD COLUMN experience_requirements JSONB DEFAULT '[]';
+-- e.g. [{"domain":"fintech","min_years":3,"importance":80}]
+
+-- Hard filters/mandatory flags for jobs
+ALTER TABLE jobs ADD COLUMN mandatory_flags JSONB DEFAULT '[]';
+-- e.g. ["cert:ISO9001","location:Algeria"]
+
+-- 4. Matching Configuration and Results Tables
+
+-- Base weights for each matching axis
 CREATE TABLE match_weights (
-  axis TEXT PRIMARY KEY, -- 'time','place','cost','experience'
-  weight NUMERIC(4,3) NOT NULL
+  axis TEXT PRIMARY KEY,
+  weight NUMERIC(5,4) NOT NULL
 );
 
 -- Default weights as a starting point
@@ -61,3 +86,21 @@ INSERT INTO match_weights (axis, weight) VALUES
 ('place', 0.15),
 ('cost', 0.30),
 ('experience', 0.35);
+
+-- Job-specific overrides for axis weights
+CREATE TABLE weight_overrides (
+  job_id UUID REFERENCES jobs(id),
+  axis TEXT,
+  weight NUMERIC(5,4),
+  PRIMARY KEY(job_id, axis)
+);
+
+-- Table to store and explain match results
+CREATE TABLE matches (
+  id BIGSERIAL PRIMARY KEY,
+  job_id UUID NOT NULL REFERENCES jobs(id),
+  freelancer_id UUID NOT NULL REFERENCES users(id),
+  score NUMERIC(6,4) NOT NULL,
+  axis_breakdown JSONB NOT NULL, -- {"time":{"score":0.8,"reason":"..."}, "place":{...}}
+  created_at TIMESTAMPTZ DEFAULT now()
+);
