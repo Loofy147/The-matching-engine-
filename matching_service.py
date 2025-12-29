@@ -5,6 +5,7 @@
 import json
 from datetime import datetime
 import geopy.distance
+from cache_client import CacheClient
 
 # Placeholder for a database connection object
 db = None
@@ -17,13 +18,24 @@ class MatchingService:
     """
     Orchestrates the two-stage matching process.
     """
-    def __init__(self, db_connection):
+    def __init__(self, db_connection, cache_client):
         self.db = db_connection
+        self.cache = cache_client
+
+    def _get_cache_key(self, job_id):
+        return f"matches:{job_id}"
 
     def match_job(self, job_id, top_n=50):
         """
         Main entry point for the matching process.
         """
+        # 1. Check cache first
+        cache_key = self._get_cache_key(job_id)
+        cached_matches = self.cache.get(cache_key)
+        if cached_matches:
+            return cached_matches[:top_n]
+
+        # 2. If cache miss, proceed with the full matching logic
         initial_candidates = self._fetch_initial_candidates(job_id)
         if not initial_candidates:
             return []
@@ -64,8 +76,12 @@ class MatchingService:
             })
 
         sorted_results = sorted(reranked_results, key=lambda x: x['final_score'], reverse=True)
+
+        # 3. Persist to DB and update cache
         top_matches = sorted_results[:top_n]
         self.db.save_matches(job_id, top_matches)
+        self.cache.set(cache_key, top_matches)
+
         return top_matches
 
     def _fetch_initial_candidates(self, job_id):

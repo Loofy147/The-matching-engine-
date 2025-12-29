@@ -96,11 +96,26 @@ CREATE TABLE weight_overrides (
 );
 
 -- Table to store and explain match results
+-- This table is partitioned by range on the `created_at` column for scalability.
+-- Note: Partitions must be created manually, e.g., for each month.
+-- Example: CREATE TABLE matches_y2024m01 PARTITION OF matches FOR VALUES FROM ('2024-01-01') TO ('2024-02-01');
 CREATE TABLE matches (
-  id BIGSERIAL PRIMARY KEY,
+  id BIGSERIAL NOT NULL,
   job_id UUID NOT NULL REFERENCES jobs(id),
   freelancer_id UUID NOT NULL REFERENCES users(id),
   score NUMERIC(6,4) NOT NULL,
   axis_breakdown JSONB NOT NULL, -- {"time":{"score":0.8,"reason":"..."}, "place":{...}}
-  created_at TIMESTAMPTZ DEFAULT now()
-);
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- 5. Performance-Oriented Indexes
+
+-- GIST index for fast geospatial queries on job locations
+CREATE INDEX idx_jobs_location_point ON jobs USING GIST (location_point);
+
+-- GIN index for efficient querying of JSONB arrays in job requirements
+CREATE INDEX idx_jobs_experience_requirements ON jobs USING GIN (experience_requirements);
+
+-- GIN index for efficient filtering on mandatory flags
+CREATE INDEX idx_jobs_mandatory_flags ON jobs USING GIN (mandatory_flags);
